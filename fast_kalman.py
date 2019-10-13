@@ -132,7 +132,6 @@ def log_likelihood_batched(x_batches, y_batches, A, Q, C, R, pi_1, V_1):
     total_ll = np.sum([log_likelihood(x_batches[i], y_batches[i], A, Q, C, R, pi_1, V_1) for i in range(len(y_batches))])
     return total_ll
 
-
 def EM_batched(y_batches, latent_dim, n_iter, ss_eps=1e-8, print_interval=None):
     #initilzie with Factor Analysis
     n = latent_dim
@@ -163,7 +162,7 @@ def EM_batched(y_batches, latent_dim, n_iter, ss_eps=1e-8, print_interval=None):
     return x_hat_batches, P_batches, P_adj_batches, A, Q, C, R, pi_1, V_1, ll_vals
 
 class KalmanFilter(object):
-    
+
     def fit(self, y_batches, latent_dim, n_iter=20, ss_eps=1e-8, print_interval=None):
         #run EM
         x_hat_batches, P_batches, P_adj_batches, A, Q, C, R, pi_1, V_1, ll_vals = EM_batched(y_batches, latent_dim, n_iter, ss_eps=ss_eps, print_interval=print_interval)
