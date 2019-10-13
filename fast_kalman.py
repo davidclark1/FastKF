@@ -48,7 +48,7 @@ def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
     for t in range(T):
         if t == 0:
             x_m_fwd[t] = pi_1
-            V_m_fwd[t] = sym(V_1)
+            V_m_fwd[t] = V_1
         else:
             x_m_fwd[t] = A.dot(x_fwd[t-1])
             V_m_fwd[t] = V_m_fwd[t-1] if in_ss_fwd else sym(A.dot(V_fwd[t-1]).dot(A.T) + Q)
@@ -75,7 +75,7 @@ def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
     in_ss_bw = False
     for t in range(T-1, -1, -1):
         if t == T-1:
-            V_back[t] = sym(V_fwd[t])
+            V_back[t] = V_fwd[t]
             x_back[t] = x_fwd[t]
         else:
             J[t] = J[t+1] if (in_ss_fwd and in_ss_bw) else V_fwd[t].dot(A.T).dot(np.linalg.inv(V_m_fwd[t+1]))
