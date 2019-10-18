@@ -16,47 +16,48 @@ def M_step_batched(y_batches, x_hat_batches, P_batches, P_adj_batches):
     x_hat_firsts = np.array([x_hat[0] for x_hat in x_hat_batches])
     P_firsts = np.array([P[0] for P in P_batches])
     P_all = np.concatenate(P_batches)
-    P_adj_sum_nofirsts = np.concatenate([P_adj[1:] for P_adj in P_adj_batches]).sum(axis=0)
+    P_adj_sum = np.concatenate([P_adj for P_adj in P_adj_batches]).sum(axis=0) #NOTE: P_adj has length T-1
     P_sum_nolasts = np.concatenate([P[:-1] for P in P_batches]).sum(axis=0)
     P_sum_nofirsts = np.concatenate([P[1:] for P in P_batches]).sum(axis=0)
     T = len(y_all)
 
     C = (y_all.T.dot(x_hat_all)).dot(np.linalg.inv(P_all.sum(axis=0)))
     R = (1. / T) * (y_all.T.dot(y_all) - C.dot(x_hat_all.T).dot(y_all))
-    A = P_adj_sum_nofirsts.dot(np.linalg.inv(P_sum_nolasts))
-    Q = (1. / (T - num_batches)) * (P_sum_nofirsts - A.dot(P_adj_sum_nofirsts.T))
+    A = P_adj_sum.dot(np.linalg.inv(P_sum_nolasts))
+    Q = (1. / (T - num_batches)) * (P_sum_nofirsts - A.dot(P_adj_sum.T))
     pi_1 = x_hat_firsts.mean(axis=0)
     V_1 = P_firsts.mean(axis=0) - np.outer(pi_1, pi_1)
 
     Q, R = sym(Q), sym(R)
     return A, Q, C, R, pi_1, V_1
     
-def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
+def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8, return_fwd=False):
     T = len(y)
     d, n = C.shape #d = observation dim, n = latent dim
     
     #=====Forward pass=====
     #initialize storage variables
-    x_m_fwd = np.zeros((T, n))
     x_fwd = np.zeros((T, n))
     V_m_fwd = np.zeros((T, n, n))
     V_fwd = np.zeros((T, n, n))
-    K = np.zeros((T, n, d))
+    K = None
     #run forward pass (t=0,...,T-1)
     in_ss_fwd = False
     ss_fwd_idx = -1
     for t in range(T):
         if t == 0:
-            x_m_fwd[t] = pi_1
+            x_m_fwd = pi_1
             V_m_fwd[t] = V_1
         else:
-            x_m_fwd[t] = A.dot(x_fwd[t-1])
-            V_m_fwd[t] = V_m_fwd[t-1] if in_ss_fwd else sym(A.dot(V_fwd[t-1]).dot(A.T) + Q)
-        K[t] = K[t-1] if in_ss_fwd else V_m_fwd[t].dot(C.T).dot(np.linalg.inv(C.dot(V_m_fwd[t]).dot(C.T) + R))            
-        x_fwd[t] = x_m_fwd[t] + K[t].dot(y[t] - C.dot(x_m_fwd[t]))
-        V_fwd[t] = V_fwd[t-1] if in_ss_fwd else sym(V_m_fwd[t] - K[t].dot(C).dot(V_m_fwd[t]))
-        if not in_ss_fwd and t >= 5 and t % 100 == 0:
-            d1 = np.max(np.abs(K[t] - K[t-1]))
+            x_m_fwd = A.dot(x_fwd[t-1])
+            V_m_fwd[t] = V_m_fwd[t-1] if in_ss_fwd else A.dot(V_fwd[t-1]).dot(A.T) + Q
+        if not in_ss_fwd:
+            K_prev = K
+            K = V_m_fwd[t].dot(C.T).dot(np.linalg.inv(C.dot(V_m_fwd[t]).dot(C.T) + R))            
+        x_fwd[t] = x_m_fwd + K.dot(y[t] - C.dot(x_m_fwd))
+        V_fwd[t] = V_fwd[t-1] if in_ss_fwd else V_m_fwd[t] - K.dot(C).dot(V_m_fwd[t])
+        if not in_ss_fwd and t >= 5 and t % 10 == 0:
+            d1 = np.max(np.abs(K - K_prev))
             d2 = np.max(np.abs(V_fwd[t] - V_fwd[t-1]))
             d3 = np.max(np.abs(V_m_fwd[t] - V_m_fwd[t-1]))
             if np.max((d1, d2, d3)) < ss_eps:
@@ -65,12 +66,10 @@ def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
     
     #=====Backward pass=====
     #initialize storage variables
-    J = np.zeros((T, n, n))
+    J = None
     x_back = np.zeros((T, n))
     V_back = np.zeros((T, n, n))
     V_adj_back = np.zeros((T, n, n))
-    P = np.zeros((T, n, n))
-    P_adj = np.zeros((T, n, n))
     #run backward pass (t=T-1,...,0)
     in_ss_bw = False
     for t in range(T-1, -1, -1):
@@ -78,21 +77,27 @@ def E_step(y, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
             V_back[t] = V_fwd[t]
             x_back[t] = x_fwd[t]
         else:
-            J[t] = J[t+1] if (in_ss_fwd and in_ss_bw) else V_fwd[t].dot(A.T).dot(np.linalg.inv(V_m_fwd[t+1]))
-            V_back[t] = V_back[t+1] if (in_ss_fwd and in_ss_bw) else sym(V_fwd[t] + J[t].dot(V_back[t+1] - V_m_fwd[t+1]).dot(J[t].T))
-            V_adj_back[t+1] = V_adj_back[t+2] if (in_ss_fwd and in_ss_bw) else V_back[t+1].dot(J[t].T)
-            x_back[t] = x_fwd[t] + J[t].dot(x_back[t+1] - A.dot(x_fwd[t]))
-            P_adj[t+1] = V_adj_back[t+1] + np.outer(x_back[t+1], x_back[t])
-        P[t] = sym(V_back[t] + np.outer(x_back[t], x_back[t]))
-        if not in_ss_bw and t <= T-5 and t % 100 == 0:
+            if not (in_ss_fwd and in_ss_bw):
+                J_next = J
+                J = V_fwd[t].dot(A.T).dot(np.linalg.inv(V_m_fwd[t+1]))
+            V_back[t] = V_back[t+1] if (in_ss_fwd and in_ss_bw) else V_fwd[t] + J.dot(V_back[t+1] - V_m_fwd[t+1]).dot(J.T)
+            V_adj_back[t+1] = V_adj_back[t+2] if (in_ss_fwd and in_ss_bw) else V_back[t+1].dot(J.T)
+            x_back[t] = x_fwd[t] + J.dot(x_back[t+1] - A.dot(x_fwd[t]))
+        if not in_ss_bw and t <= T-5 and t % 10 == 0:
             d1 = np.max(np.abs(V_back[t+1] - V_back[t]))
-            d2 = np.max(np.abs(V_adj_back[t+2] - V_back[t+1]))
-            d3 = np.max(np.abs(J[t] - J[t]))
+            d2 = np.max(np.abs(V_adj_back[t+2] - V_adj_back[t+1]))
+            d3 = np.max(np.abs(J - J_next))
             if np.max((d1, d2, d3)) < ss_eps:
                 in_ss_bw = True
         in_ss_fw = t > ss_fwd_idx
 
-    return x_back, P, P_adj
+    P = V_back + x_back[:, :, np.newaxis] * x_back[:, :, np.newaxis].swapaxes(1, 2)
+    P_adj = V_adj_back[1:] + x_back[1:, :, np.newaxis] * x_back[:-1, :, np.newaxis].swapaxes(1, 2)
+        
+    if return_fwd:
+        return x_fwd, x_back, P, P_adj
+    else:
+        return x_back, P, P_adj
 
 def E_step_batched(y_batches, A, Q, C, R, pi_1, V_1, ss_eps=1e-8):
     num_batches = len(y_batches)
@@ -143,7 +148,7 @@ def EM_batched(y_batches, latent_dim, n_iter, ss_eps=1e-8, print_interval=None):
         x_hat = fa.fit_transform(y_batches[i])
         T = len(y_batches[i])
         P = np.repeat(np.eye(n)[np.newaxis, :, :], T, axis=0)
-        P_adj = np.concatenate((np.zeros((1, n, n)), np.array([np.outer(x_hat[t], x_hat[t-1]) for t in range(1, T)])), axis=0)
+        P_adj = np.array([np.outer(x_hat[t], x_hat[t-1]) for t in range(1, T)])
         x_hat_batches.append(x_hat)
         P_batches.append(P)
         P_adj_batches.append(P_adj)
@@ -151,11 +156,13 @@ def EM_batched(y_batches, latent_dim, n_iter, ss_eps=1e-8, print_interval=None):
     #run EM
     ll_vals = np.zeros(n_iter)
     for i in range(n_iter):
-        if print_interval is not None and i % print_interval == 0:
-            print("iter", i)
         A, Q, C, R, pi_1, V_1 = M_step_batched(y_batches, x_hat_batches, P_batches, P_adj_batches)
         x_hat_batches, P_batches, P_adj_batches = E_step_batched(y_batches, A, Q, C, R, pi_1, V_1, ss_eps=ss_eps)
-        ll_vals[i] = log_likelihood_batched(x_hat_batches, y_batches, A, Q, C, R, pi_1, V_1)
+        if print_interval is not None and i % print_interval == 0:
+            print("iter", i)
+            ll_vals[i] = log_likelihood_batched(x_hat_batches, y_batches, A, Q, C, R, pi_1, V_1)
+        else:
+            ll_vals[i] = np.nan
     if print_interval is not None:
         print("iter", n_iter)
 
